@@ -5,7 +5,7 @@ import subprocess
 import os
 import uuid
 
-# Конфигурация
+#Конфигурация
 TOKEN = ''
 TEMP_FOLDER = './temp'
 COOKIE_FILE = './cookie.txt'
@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 # Создаём временную папку, если её нет
 os.makedirs(TEMP_FOLDER, exist_ok=True)
 
-# Функция скачивания и отправки видео
+#Функция скачивания и отправки видео
 async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
     msg = await update.message.reply_text('⏳ Скачиваю видео...')
@@ -23,7 +23,7 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
     unique_id = str(uuid.uuid4())
     temp_file = f'{TEMP_FOLDER}/{unique_id}.mp4'
 
-    # Используем yt-dlp с cookie для скачивания и ffmpeg для конвертации
+    #Используем yt-dlp с cookie для скачивания и ffmpeg для конвертации
     command = [
         'yt-dlp',
         '--cookies', COOKIE_FILE,

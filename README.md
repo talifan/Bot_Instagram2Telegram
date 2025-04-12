@@ -10,6 +10,6 @@
 - python-telegram-bot
 
 В системе должнен стоять ffmpeg
-- sudo apt install ffmpeg
+- apt install ffmpeg
 
-В текст скрипта вписать ключ для бота взятый от Bot Father
+В текст скрипта вписать ключ для бота взятый от Bot Father.
