@@ -13,3 +13,8 @@
 - apt install ffmpeg
 
 В текст скрипта вписать ключ для бота взятый от Bot Father.
+
+Переменные окружения передавать в докере вот так:
+docker run -d \
+-e BOT_TOKEN=your_token_here \
+-e ALLOWED_USER_IDS=123456789,1234567449 \

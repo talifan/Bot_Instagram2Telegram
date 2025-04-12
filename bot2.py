@@ -1,29 +1,36 @@
 import logging
+import os
+import subprocess
+import uuid
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
-import subprocess
-import os
-import uuid
 
-#Конфигурация
-TOKEN = '7435088335:AAHj1bkDio9fLJcqABGivwcnJ_RKpwkb-Ao'
+# Конфигурация из переменных окружения
+TOKEN = os.getenv('BOT_TOKEN')
 TEMP_FOLDER = './temp'
 COOKIE_FILE = './cookie.txt'
+ALLOWED_USERS = set(map(int, os.getenv('ALLOWED_USER_IDS', '').split(',')))
 
 logging.basicConfig(level=logging.INFO)
 
 # Создаём временную папку, если её нет
 os.makedirs(TEMP_FOLDER, exist_ok=True)
 
-#Функция скачивания и отправки видео
+# Функция скачивания и отправки видео
 async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        await update.message.reply_text('⛔️ У вас нет доступа к этому боту.')
+        logging.warning(f"Доступ запрещён для user_id: {user_id}")
+        return
+
     url = update.message.text
     msg = await update.message.reply_text('⏳ Скачиваю видео...')
 
     unique_id = str(uuid.uuid4())
     temp_file = f'{TEMP_FOLDER}/{unique_id}.mp4'
 
-    #Используем yt-dlp с cookie для скачивания и ffmpeg для конвертации
+    # Используем yt-dlp с cookie для скачивания и ffmpeg для конвертации
     command = [
         'yt-dlp',
         '--cookies', COOKIE_FILE,
@@ -58,8 +65,10 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
 
 # Точка входа
 if __name__ == '__main__':
-    app = ApplicationBuilder().token(TOKEN).build()
+    if not TOKEN or not ALLOWED_USERS:
+        raise ValueError("Переменные окружения BOT_TOKEN и ALLOWED_USER_IDS обязательны для запуска")
 
+    app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), download_and_send_video))
 
     logging.info('Бот запущен...')
