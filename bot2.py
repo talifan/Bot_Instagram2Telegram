@@ -6,7 +6,7 @@ import os
 import uuid
 
 #Конфигурация
-TOKEN = ''
+TOKEN = '7435088335:AAHj1bkDio9fLJcqABGivwcnJ_RKpwkb-Ao'
 TEMP_FOLDER = './temp'
 COOKIE_FILE = './cookie.txt'
 
