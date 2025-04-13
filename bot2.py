@@ -8,13 +8,20 @@ from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filte
 # Конфигурация из переменных окружения
 TOKEN = os.getenv('BOT_TOKEN')
 TEMP_FOLDER = './temp'
-COOKIE_FILE = './cookie.txt'
 ALLOWED_USERS = set(map(int, os.getenv('ALLOWED_USER_IDS', '').split(',')))
 
 logging.basicConfig(level=logging.INFO)
 
 # Создаём временную папку, если её нет
 os.makedirs(TEMP_FOLDER, exist_ok=True)
+
+# Определение cookie-файла по URL
+def get_cookie_file(url: str) -> str:
+    if 'instagram.com' in url:
+        return './cookie_instagram.txt'
+    elif 'youtube.com' in url or 'youtu.be' in url:
+        return './cookie_youtube.txt'
+    return ''
 
 # Функция скачивания и отправки видео
 async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -29,15 +36,13 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
 
     unique_id = str(uuid.uuid4())
     temp_file = f'{TEMP_FOLDER}/{unique_id}.mp4'
+    cookie_file = get_cookie_file(url)
 
-    # Используем yt-dlp с cookie для скачивания и ffmpeg для конвертации
-    command = [
-        'yt-dlp',
-        '--cookies', COOKIE_FILE,
-        '-f', 'mp4',
-        '-o', temp_file,
-        url
-    ]
+    # Формируем команду yt-dlp
+    command = ['yt-dlp']
+    if cookie_file:
+        command += ['--cookies', cookie_file]
+    command += ['-f', 'mp4', '-o', temp_file, url]
 
     logging.info(f"Запуск команды yt-dlp: {' '.join(command)}")
 
