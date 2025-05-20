@@ -42,22 +42,35 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
     command = ['yt-dlp']
     if cookie_file:
         command += ['--cookies', cookie_file]
-    command += ['-f', 'mp4', '-o', temp_file, url]
+    command += [
+        '-f', 'mp4[filesize<50M]/bv*+ba/b[filesize<50M]',
+        '--no-playlist',
+        '--max-filesize', '50M',
+        '-o', temp_file,
+        url
+    ]
 
     logging.info(f"Запуск команды yt-dlp: {' '.join(command)}")
 
     try:
-        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
         logging.info(f"Видео скачано: {temp_file}")
 
         await msg.edit_text('📤 Отправляю видео...')
 
-        # Отправляем видео обратно пользователю
-        with open(temp_file, 'rb') as video:
-            await update.message.reply_video(video)
+        file_size = os.path.getsize(temp_file)
+        if file_size > 50 * 1024 * 1024:
+            await msg.edit_text('❌ Видео слишком большое для отправки в Telegram (>50MB).')
+            logging.warning(f"Файл слишком большой: {file_size} байт")
+        else:
+            with open(temp_file, 'rb') as video:
+                await update.message.reply_video(video)
 
         await msg.delete()
 
+    except subprocess.TimeoutExpired:
+        logging.error("Превышено время ожидания скачивания видео")
+        await msg.edit_text('❌ Превышено время ожидания скачивания видео.')
     except subprocess.CalledProcessError as e:
         logging.error(f"Ошибка скачивания видео: {e.stderr.decode('utf-8')}")
         await msg.edit_text(f'❌ Ошибка скачивания видео:\n{e.stderr.decode("utf-8")}')
