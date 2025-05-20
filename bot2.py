@@ -53,9 +53,14 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
     logging.info(f"Запуск команды yt-dlp: {' '.join(command)}")
 
     try:
-        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-        logging.info(f"Видео скачано: {temp_file}")
+        result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        logging.info(f"Завершено. stdout: {result.stdout.decode('utf-8')}")
 
+        if not os.path.exists(temp_file):
+            await msg.edit_text('❌ Видео не было загружено. Возможно, оно превышает лимит или недоступно.')
+            return
+
+        logging.info(f"Видео скачано: {temp_file}")
         await msg.edit_text('📤 Отправляю видео...')
 
         file_size = os.path.getsize(temp_file)
