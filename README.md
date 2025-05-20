@@ -14,7 +14,9 @@
 
 В текст скрипта вписать ключ для бота взятый от Bot Father.
 
+Собрать докер образ:
+docker build -t telegram-bot .
+
 Переменные окружения передавать в докере вот так:
-docker run -d \
--e BOT_TOKEN=your_token_here \
--e ALLOWED_USER_IDS=123456789,1234567449 \
+
+docker run -d -e BOT_TOKEN=7435088335:AAHj1bkDio9fLJcqABGivwcnJ_RKpwkb-Ao -e ALLOWED_USER_IDS=224465744,140166542 telegram-bot
