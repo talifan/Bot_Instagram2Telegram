@@ -23,6 +23,26 @@ def get_cookie_file(url: str) -> str:
         return './cookie_youtube.txt'
     return ''
 
+# Функция перекодирования видео под лимит Telegram
+def compress_video(input_path: str, output_path: str) -> bool:
+    try:
+        command = [
+            'ffmpeg', '-i', input_path,
+            '-vf', 'scale=w=640:h=-2',
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '28',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-movflags', '+faststart',
+            output_path
+        ]
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return os.path.exists(output_path) and os.path.getsize(output_path) <= 50 * 1024 * 1024
+    except Exception as e:
+        logging.error(f"Ошибка перекодирования видео: {e}")
+        return False
+
 # Функция скачивания и отправки видео
 async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -36,6 +56,7 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
 
     unique_id = str(uuid.uuid4())
     temp_file = f'{TEMP_FOLDER}/{unique_id}.mp4'
+    compressed_file = f'{TEMP_FOLDER}/{unique_id}_compressed.mp4'
     cookie_file = get_cookie_file(url)
 
     # Формируем команду yt-dlp
@@ -43,9 +64,8 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
     if cookie_file:
         command += ['--cookies', cookie_file]
     command += [
-        '-f', 'mp4[filesize<50M]/bv*+ba/b[filesize<50M]',
+        '-f', 'bestvideo+bestaudio/best',
         '--no-playlist',
-        '--max-filesize', '50M',
         '-o', temp_file,
         url
     ]
@@ -60,16 +80,20 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
             await msg.edit_text('❌ Видео не было загружено. Возможно, оно превышает лимит или недоступно.')
             return
 
-        logging.info(f"Видео скачано: {temp_file}")
-        await msg.edit_text('📤 Отправляю видео...')
-
         file_size = os.path.getsize(temp_file)
         if file_size > 50 * 1024 * 1024:
-            await msg.edit_text('❌ Видео слишком большое для отправки в Telegram (>50MB).')
-            logging.warning(f"Файл слишком большой: {file_size} байт")
-        else:
-            with open(temp_file, 'rb') as video:
-                await update.message.reply_video(video)
+            await msg.edit_text('⚙️ Видео большое, перекодирую...')
+            if not compress_video(temp_file, compressed_file):
+                await msg.edit_text('❌ Не удалось перекодировать видео под лимит Telegram.')
+                return
+            os.remove(temp_file)
+            temp_file = compressed_file
+
+        logging.info(f"Видео готово к отправке: {temp_file}")
+        await msg.edit_text('📤 Отправляю видео...')
+
+        with open(temp_file, 'rb') as video:
+            await update.message.reply_video(video)
 
         await msg.delete()
 
@@ -83,8 +107,9 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
         logging.exception("Непредвиденная ошибка")
         await msg.edit_text(f'❌ Возникла непредвиденная ошибка:\n{str(e)}')
     finally:
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+        for f in [temp_file, compressed_file]:
+            if os.path.exists(f):
+                os.remove(f)
 
 # Точка входа
 if __name__ == '__main__':
