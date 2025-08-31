@@ -10,11 +10,11 @@ from datetime import date
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters, CommandHandler
 
-# Конфигурация из переменных окружения
+# Config from environment
 TOKEN = os.getenv('BOT_TOKEN')
 TEMP_FOLDER = './temp'
 
-# Безопасный парсер ALLOWED_USER_IDS (запятая-разделитель, игнор пустых/ошибочных значений)
+# Safe ALLOWED_USER_IDS parser (comma-separated; ignores blanks/invalid)
 def parse_allowed_users(env_value: str) -> set[int]:
     users = set()
     if not env_value:
@@ -26,22 +26,26 @@ def parse_allowed_users(env_value: str) -> set[int]:
         try:
             users.add(int(part))
         except ValueError:
-            logging.warning(f"Пропускаю некорректный user id: {part}")
+            logging.warning(f"Skipping invalid user id: {part}")
     return users
 
 ALLOWED_USERS = parse_allowed_users(os.getenv('ALLOWED_USER_IDS', ''))
 
-# Памятная статистика за время работы процесса (сбрасывается при перезапуске)
+# In-memory stats for process lifetime (reset on container restart)
 TOTAL_SUCCESS = 0
 TOTAL_FAIL = 0
 
 logging.basicConfig(level=logging.INFO)
-# Убираем шумные логи HTTP-запросов Telegram (httpx)
+# Hide noisy Telegram HTTP logs (httpx)
 httpx_logger = logging.getLogger("httpx")
 httpx_logger.setLevel(logging.WARNING)
 httpx_logger.disabled = True
+class _NoHttpxFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
+        return not record.name.startswith('httpx')
+logging.getLogger().addFilter(_NoHttpxFilter())
 
-# Создаём временную папку, если её нет
+# Ensure temp folder exists
 os.makedirs(TEMP_FOLDER, exist_ok=True)
 
 def increment_success() -> None:
@@ -53,18 +57,18 @@ def increment_fail() -> None:
     TOTAL_FAIL += 1
 
 def get_stats_text() -> str:
-    return f"успехов: {TOTAL_SUCCESS}, ошибок: {TOTAL_FAIL}"
+    return f"success: {TOTAL_SUCCESS}, failures: {TOTAL_FAIL}"
 
 def build_status(stage: str, attempt: int | None = None, max_attempts: int | None = None, progress: str | None = None) -> str:
     parts = [stage]
     if attempt and max_attempts:
-        parts.append(f"(попытка {attempt}/{max_attempts})")
+        parts.append(f"(try {attempt}/{max_attempts})")
     if progress:
         parts.append(progress)
     parts.append(f"— {get_stats_text()}")
     return ' '.join(parts)
 
-# Определение cookie-файла по URL
+# Select cookie file by URL
 def get_cookie_file(url: str) -> str:
     if 'instagram.com' in url:
         return './cookie_instagram.txt'
@@ -72,7 +76,7 @@ def get_cookie_file(url: str) -> str:
         return './cookie_youtube.txt'
     return ''
 
-# Функция перекодирования видео под лимит Telegram
+# Transcode video to fit Telegram limit
 def compress_video(input_path: str, output_path: str) -> bool:
     try:
         command = [
@@ -89,26 +93,26 @@ def compress_video(input_path: str, output_path: str) -> bool:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return os.path.exists(output_path) and os.path.getsize(output_path) <= 50 * 1024 * 1024
     except Exception as e:
-        logging.error(f"Ошибка перекодирования видео: {e}")
+        logging.error(f"Video transcode error: {e}")
         return False
 
-# Функция скачивания и отправки видео
+# Download and send video
 async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USERS:
-        await update.message.reply_text('⛔️ У вас нет доступа к этому боту.')
-        logging.warning(f"Доступ запрещён для user_id: {user_id}")
+        await update.message.reply_text('⛔️ You are not allowed to use this bot.')
+        logging.warning(f"Access denied for user_id: {user_id}")
         return
 
     url = update.message.text
-    msg = await update.message.reply_text(build_status('⏳ Скачиваю видео...'))
+    msg = await update.message.reply_text(build_status('⏳ Downloading video...'))
 
     unique_id = str(uuid.uuid4())
     temp_file = f'{TEMP_FOLDER}/{unique_id}.mp4'
     compressed_file = f'{TEMP_FOLDER}/{unique_id}_compressed.mp4'
     cookie_file = get_cookie_file(url)
 
-    # Формируем и запускаем yt-dlp с повторными попытками
+    # Build and run yt-dlp with retries
     def build_command() -> list[str]:
         cmd = ['yt-dlp']
         if cookie_file:
@@ -130,10 +134,10 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
     try:
         for attempt in range(1, max_attempts + 1):
             command = build_command()
-            logging.info(f"Запуск yt-dlp (попытка {attempt}): {' '.join(command)}")
+            logging.info(f"Starting yt-dlp (attempt {attempt}): {' '.join(command)}")
             # Обновим статус на попытку скачивания
             try:
-                await msg.edit_text(build_status('⏳ Скачиваю...', attempt, max_attempts))
+                await msg.edit_text(build_status('⏳ Downloading...', attempt, max_attempts))
             except Exception:
                 pass
             # Потоковое отслеживание прогресса на stderr
@@ -172,7 +176,7 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
                             now = time.monotonic()
                             if percent != percent_last and (now - last_update) >= 1.0:
                                 try:
-                                    await msg.edit_text(build_status('⏳ Скачиваю...', attempt, max_attempts, f'[{percent}%]'))
+                                    await msg.edit_text(build_status('⏳ Downloading...', attempt, max_attempts, f'[{percent}%]'))
                                 except Exception:
                                     pass
                                 percent_last = percent
@@ -184,9 +188,9 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
                 if rc != 0:
                     last_err_text = ''.join(err_lines)
                     raise subprocess.CalledProcessError(rc, command, output='', stderr=last_err_text)
-                # Успех
+                # Success
                 try:
-                    await msg.edit_text(build_status('✅ Загружено. Обработка файла...'))
+                    await msg.edit_text(build_status('✅ Downloaded. Processing file...'))
                 except Exception:
                     pass
                 break
@@ -198,95 +202,94 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
                     pass
 
         if not os.path.exists(temp_file):
-            await msg.edit_text('❌ Видео не было загружено. Возможно, оно превышает лимит или недоступно.')
+            await msg.edit_text('❌ Video was not downloaded. It may exceed the limit or be unavailable.')
             return
 
         file_size = os.path.getsize(temp_file)
         if file_size > 50 * 1024 * 1024:
             try:
-                await msg.edit_text(build_status('⚙️ Видео большое, перекодирую...'))
+                await msg.edit_text(build_status('⚙️ Large video, transcoding...'))
             except Exception:
                 pass
             if not compress_video(temp_file, compressed_file):
-                await msg.edit_text(build_status('❌ Не удалось перекодировать видео под лимит Telegram.'))
+                await msg.edit_text(build_status('❌ Failed to transcode video to fit Telegram limit.'))
                 return
             os.remove(temp_file)
             temp_file = compressed_file
 
-        logging.info(f"Видео готово к отправке: {temp_file}")
+        logging.info(f"Video ready to send: {temp_file}")
         try:
-            await msg.edit_text(build_status('📤 Отправляю видео...'))
+            await msg.edit_text(build_status('📤 Uploading video...'))
         except Exception:
             pass
 
         with open(temp_file, 'rb') as video:
             await update.message.reply_video(video)
 
-        # Увеличиваем счётчик успешных скачиваний
+        # Increase success counter
         increment_success()
         try:
-            await msg.edit_text(build_status('✅ Готово.'))
+            await msg.edit_text(build_status('✅ Done.'))
         except Exception:
             pass
 
     except subprocess.TimeoutExpired:
-        logging.error("Превышено время ожидания скачивания видео")
+        logging.error("Download timeout")
         increment_fail()
-        await msg.edit_text(build_status('❌ Таймаут скачивания. Попробуйте позже.'))
+        await msg.edit_text(build_status('❌ Download timeout. Try again later.'))
     except subprocess.CalledProcessError as e:
         err_text = (last_err_text or e.stderr.decode('utf-8', errors='ignore')).strip()
-        logging.error(f"Ошибка скачивания видео: {err_text}")
+        logging.error(f"Video download error: {err_text}")
         increment_fail()
         low = err_text.lower()
         if ('login required' in low) or ('rate-limit' in low) or ('locked behind the login page' in low):
-            # Короткое и понятное сообщение
-            await msg.edit_text(build_status('❌ Instagram требует вход или лимит. Обновите cookies и повторите.'))
+            # Short and clear message
+            await msg.edit_text(build_status('❌ Instagram login required or rate limit. Update cookies and retry.'))
         else:
-            await msg.edit_text(build_status('❌ Не удалось скачать. Повторите позже.'))
+            await msg.edit_text(build_status('❌ Failed to download. Try again later.'))
     except Exception as e:
-        logging.exception("Непредвиденная ошибка")
+        logging.exception("Unexpected error")
         increment_fail()
-        await msg.edit_text(build_status('❌ Непредвиденная ошибка. Повторите позже.'))
+        await msg.edit_text(build_status('❌ Unexpected error. Try again later.'))
     finally:
         for f in [temp_file, compressed_file]:
             if os.path.exists(f):
                 os.remove(f)
 
-# Команда /start — приветствие и клавиатура
+# /start — greeting and keyboard
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USERS:
         return
     keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton('Статистика')]], resize_keyboard=True
+        [[KeyboardButton('Stats')]], resize_keyboard=True
     )
     await update.message.reply_text(
-        'Отправьте ссылку на видео из Instagram или YouTube.\n'
-        'Нажмите «Статистика», чтобы увидеть количество скачиваний за сегодня, '
-        'или используйте команду /stats.',
+        'Send a link to an Instagram or YouTube video.\n'
+        'Tap “Stats” to see totals since start, or use /stats.',
         reply_markup=keyboard
     )
 
-# Команда и кнопка «Статистика»
+# /stats and “Stats” button
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USERS:
         return
-    await update.message.reply_text(f'Статистика: {get_stats_text()}')
+    await update.message.reply_text(f'Stats: {get_stats_text()}')
 
 # Точка входа
 if __name__ == '__main__':
     if not TOKEN or not ALLOWED_USERS:
-        raise ValueError("Переменные окружения BOT_TOKEN и ALLOWED_USER_IDS обязательны для запуска")
+        raise ValueError("Environment variables BOT_TOKEN and ALLOWED_USER_IDS are required")
 
     app = ApplicationBuilder().token(TOKEN).build()
-    # Команды
+    # Commands
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('stats', stats_command))
-    # Кнопка «Статистика» (регистронезависимо)
-    app.add_handler(MessageHandler(filters.Regex(re.compile(r'^статистика$', re.IGNORECASE)), stats_command))
-    # Обработка ссылок
+    # Stats button (case-insensitive)
+    app.add_handler(MessageHandler(filters.Regex(re.compile(r'^stats$', re.IGNORECASE)), stats_command))
+    # Handle links
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), download_and_send_video))
 
-    logging.info('Бот запущен...')
+    logging.info('Bot started...')
     app.run_polling()

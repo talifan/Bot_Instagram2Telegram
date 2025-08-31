@@ -1,49 +1,58 @@
-Бот нужен чтобы скачать видео из Instagram или YouTube и отправить в Telegram как вложение. Работает с постами и Reels. Изображения не поддерживаются.
+Bot to download Instagram or YouTube videos and send them to Telegram as an attachment. Supports posts and Reels. Images are not supported.
 
-English version: see README_EN.md
-
-Требования:
-- Python-пакеты: `python-telegram-bot`, `yt-dlp` (см. `requirements.txt`)
-- В системе должен быть установлен `ffmpeg`
+Requirements
+- Python packages: `python-telegram-bot`, `yt-dlp` (see `requirements.txt`)
+- System dependency: `ffmpeg`
   - Ubuntu/Debian: `apt install ffmpeg`
 
-Куки для загрузки:
-- Для Instagram: файл `cookie_instagram.txt` (не хранить в репозитории)
-- Для YouTube: файл `cookie_youtube.txt` (не хранить в репозитории)
+Cookies
+- Instagram: `cookie_instagram.txt` (do not store in the repository)
+- YouTube: `cookie_youtube.txt` (do not store in the repository)
 
-Как получить cookie (и где хранить):
-1. Войти в аккаунт в браузере.
-2. Установить расширение «Get cookies.txt LOCALLY».
-3. Сохранить куки в локальные файлы (`cookie_instagram.txt` и/или `cookie_youtube.txt`) рядом с проектом или в папке `secrets/`.
-4. Не коммитить эти файлы в репозиторий — они добавлены в `.gitignore`.
+How to get cookies (and where to store)
+1) Log into your account in a browser.
+2) Install the “Get cookies.txt LOCALLY” extension.
+3) Save cookies into local files (`cookie_instagram.txt` and/or `cookie_youtube.txt`) next to the project or in `secrets/`.
+4) Do not commit these files — they are ignored by `.gitignore`.
 
-Запуск бота
-1) Переменные окружения:
-- `BOT_TOKEN` — токен Telegram-бота от BotFather.
-- `ALLOWED_USER_IDS` — список ID пользователей, которым разрешён доступ (через запятую). Примеры: `12345` или `12345,67890`.
-  - Пробелы и пустые элементы игнорируются, некорректные значения пропускаются.
+Run
+0) Build the image:
+```
+docker build -t telegram-bot .
+```
+1) Environment variables:
+- `BOT_TOKEN` — your Telegram bot token from BotFather
+- `ALLOWED_USER_IDS` — comma-separated list of Telegram user IDs allowed to use the bot (e.g. `12345,67890`).
+  - Spaces and empty elements are ignored; invalid values are skipped.
 
-2) Docker (рекомендуется примонтировать cookie как read-only):
+2) Docker (recommended: mount cookie files as read-only):
 ```
 docker run -d \
   -e BOT_TOKEN=your_token_here \
   -e ALLOWED_USER_IDS=123456789,1234567449 \
   -v $(pwd)/cookie_instagram.txt:/app/cookie_instagram.txt:ro \
   -v $(pwd)/cookie_youtube.txt:/app/cookie_youtube.txt:ro \
-  your-image-name
+  telegram-bot
+```
+Simple run without cookies (if not needed):
+```
+docker run -d \
+  -e BOT_TOKEN=your_token_here \
+  -e ALLOWED_USER_IDS=123456789,1234567449 \
+  telegram-bot
 ```
 
-Использование
-- Отправьте боту ссылку на видео из Instagram или YouTube — бот скачает и пришлёт его как видео.
-- Если размер файла больше 50 МБ, бот автоматически пережмёт видео (до ширины ~640px), чтобы уложиться в лимит Telegram.
-- Кнопка «Статистика» и команда `/stats` показывают суммарные значения за время работы контейнера: успешные и неуспешные загрузки.
-- Для Instagram бот использует мобильный User-Agent и делает несколько автоматических повторов при временных ошибках/лимитах.
-- Бот ведёт «комментарий состояния»: одно служебное сообщение обновляется на каждом этапе (скачивание с процентами/повторы/перекодирование/отправка) и показывает текущую статистику (успехи/ошибки с момента запуска).
+Usage
+- Send the bot a link to an Instagram or YouTube video — it will download and send it as a Telegram video.
+- If the file exceeds 50 MB, the bot will transcode it (down to ~640px width) to fit Telegram’s limit.
+- “Statistics” button and `/stats` command show cumulative counts since container start: successful and failed downloads.
+- For Instagram, the bot uses a mobile User-Agent and retries a few times for transient errors/rate limits.
+- The bot keeps a “live status” message: one service message updated at each step (downloading with percent, retries, transcoding, sending) and shows current stats.
 
-Примечания
-- Статистика хранится в памяти процесса и сбрасывается при перезапуске контейнера.
+Notes
+- Stats are in-memory and reset on container restart.
 
-Безопасность
-- Файлы cookie и токены не должны попадать в репозиторий. В репозитории добавлен `.gitignore`, закрывающий `cookie_*.txt`, `secrets/` и локальные артефакты.
-- Cookie-файлы опциональны для публичных видео, но часто нужны для приватных/ограниченных материалов.
- - Instagram может временно требовать авторизацию или ограничивать частоту запросов. Если ошибка повторяется, обновите `cookie_instagram.txt` и попробуйте позже.
+Security
+- Do NOT commit cookies or tokens. `.gitignore` excludes `cookie_*.txt`, `secrets/`, and local artifacts.
+- Cookies are optional for public videos but often required for private/limited content.
+- Instagram may temporarily require login or throttle. If errors repeat, refresh `cookie_instagram.txt` and try again.
