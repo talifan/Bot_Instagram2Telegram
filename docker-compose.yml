@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  telegram-bot:
+    image: telegram-bot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ALLOWED_USER_IDS=${ALLOWED_USER_IDS}
+    volumes:
+      # Mount cookies if you use private/limited videos
+      - ./cookie_instagram.txt:/app/cookie_instagram.txt:ro
+      - ./cookie_youtube.txt:/app/cookie_youtube.txt:ro
+      # Optional: persist temp if desired
+      - ./temp:/app/temp
+    restart: unless-stopped
