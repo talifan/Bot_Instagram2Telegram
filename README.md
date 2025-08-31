@@ -1,5 +1,7 @@
 Бот нужен чтобы скачать видео из Instagram или YouTube и отправить в Telegram как вложение. Работает с постами и Reels. Изображения не поддерживаются.
 
+English version: see README_EN.md
+
 Требования:
 - Python-пакеты: `python-telegram-bot`, `yt-dlp` (см. `requirements.txt`)
 - В системе должен быть установлен `ffmpeg`
