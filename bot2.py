@@ -1,3 +1,4 @@
+import glob
 import logging
 import re
 import select
@@ -117,7 +118,13 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
         cmd = ['yt-dlp']
         if cookie_file:
             cmd += ['--cookies', cookie_file]
-        cmd += ['-f', 'bestvideo+bestaudio/best', '--no-playlist', '--newline', '-o', temp_file]
+        cmd += [
+            '-f', 'bestvideo+bestaudio/best',
+            '--merge-output-format', 'mp4',
+            '--no-playlist',
+            '--newline',
+            '-o', temp_file
+        ]
         if 'instagram.com' in url:
             mobile_ua = (
                 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) '
@@ -200,6 +207,18 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
                         proc.stderr.close()
                 except Exception:
                     pass
+
+        if not os.path.exists(temp_file):
+            fallback_matches = [
+                path for path in glob.glob(f'{TEMP_FOLDER}/{unique_id}.*')
+                if not path.endswith('.part')
+            ]
+            if fallback_matches:
+                fallback_matches.sort(key=os.path.getsize, reverse=True)
+                temp_file = fallback_matches[0]
+            else:
+                await msg.edit_text('❌ Video was not downloaded. It may exceed the limit or be unavailable.')
+                return
 
         if not os.path.exists(temp_file):
             await msg.edit_text('❌ Video was not downloaded. It may exceed the limit or be unavailable.')
