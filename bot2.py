@@ -11,6 +11,10 @@ from datetime import date
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters, CommandHandler
 
+# New imports for music feature
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+
 # Config from environment
 TOKEN = os.getenv('BOT_TOKEN')
 TEMP_FOLDER = './temp'
@@ -77,19 +81,183 @@ def get_cookie_file(url: str) -> str:
         return './cookie_youtube.txt'
     return ''
 
+# Universal message router
+async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        await update.message.reply_text('⛔️ You are not allowed to use this bot.')
+        logging.warning(f"Access denied for user_id: {user_id}")
+        return
+
+    text = update.message.text
+    if not text:
+        return
+    
+    # Route to video downloader for specific URLs
+    if 'instagram.com' in text or 'youtube.com' in text or 'youtu.be' in text:
+        await download_and_send_video(update, context)
+    # All other text is treated as a song request (name or spotify link)
+    else:
+        await handle_song_request(update, context)
+
+# Modified function to handle song requests
+async def handle_song_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        # This check is redundant if route_message does it, but good for safety
+        await update.message.reply_text('⛔️ You are not allowed to use this bot.')
+        logging.warning(f"Access denied for user_id: {user_id}")
+        return
+
+    query = update.message.text
+    msg = await update.message.reply_text(build_status(f'⏳ Searching for "{query}"...'))
+
+    song_title = None
+    artist = None
+
+    # Check if it's a spotify URL
+    if 'open.spotify.com/track' in query:
+        try:
+            if not os.getenv('SPOTIPY_CLIENT_ID') or not os.getenv('SPOTIPY_CLIENT_SECRET'):
+                await msg.edit_text('❌ Spotify API credentials are not set. This feature is disabled.')
+                logging.warning("SPOTIPY_CLIENT_ID or SPOTIPY_CLIENT_SECRET not set.")
+                return
+
+            sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
+            track = sp.track(query)
+            song_title = track['name']
+            artist = track['artists'][0]['name']
+            await msg.edit_text(build_status(f'⏳ Found on Spotify: "{song_title}" by {artist}. Searching on YouTube...'))
+        except Exception:
+            logging.exception("Spotify error")
+            await msg.edit_text('❌ Could not process the Spotify link. Make sure it is a valid track link and credentials are correct.')
+            increment_fail()
+            return
+    else:
+        song_title = query
+
+    # Search on YouTube using yt-dlp - pass search query directly to download_audio
+    search_query = f"{artist} {song_title}" if artist else song_title
+    try:
+        await msg.edit_text(build_status(f'⏳ Starting download for "{search_query}"...'))
+        # Pass the ytsearch query directly to download_audio
+        await download_audio(update, context, f'ytsearch1:{search_query}', song_title, artist, msg)
+
+    except Exception:
+        logging.exception("YouTube search error")
+        await msg.edit_text('❌ An error occurred while searching on YouTube.')
+        increment_fail()
+
+# Function to download audio
+async def download_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, song_title: str, artist: str | None, msg):
+    unique_id = str(uuid.uuid4())
+    temp_file_pattern = f'{TEMP_FOLDER}/{unique_id}.%(ext)s'
+    
+    command = [
+        'yt-dlp', '-x', '--audio-format', 'mp3', '--audio-quality', '0',
+        '--no-playlist', '--newline',
+        '--metadata-from-title', "%(artist)s - %(title)s",
+        '--embed-thumbnail', '-o', temp_file_pattern, url
+    ]
+
+    last_err_text = ''
+    try:
+        logging.info(f"Starting yt-dlp for audio: {' '.join(command)}")
+        await msg.edit_text(build_status('⏳ Downloading...'))
+
+        start_ts = time.monotonic()
+        err_lines: list[str] = []
+        
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+
+        try:
+            while True:
+                # Timeout for the whole download process
+                if time.monotonic() - start_ts > 300:
+                    proc.kill()
+                    raise subprocess.TimeoutExpired(command, timeout=300)
+
+                # Read stderr if available
+                if proc.stderr is None:
+                    break
+                
+                rlist, _, _ = select.select([proc.stderr], [], [], 0.5)
+                if rlist:
+                    line = proc.stderr.readline()
+                    if not line:
+                        if proc.poll() is not None:
+                            break
+                        continue
+                    logging.info(f"yt-dlp: {line.strip()}")
+                    err_lines.append(line)
+                else:
+                    if proc.poll() is not None:
+                        break
+            
+            rc = proc.wait()
+            if rc != 0:
+                last_err_text = ''.join(err_lines)
+                raise subprocess.CalledProcessError(rc, command, output='', stderr=last_err_text)
+
+        finally:
+            try:
+                if proc.stderr and not proc.stderr.closed:
+                    proc.stderr.close()
+                if proc.stdout and not proc.stdout.closed:
+                    proc.stdout.close()
+            except Exception:
+                pass
+
+        downloaded_files = glob.glob(f'{TEMP_FOLDER}/{unique_id}.*')
+        if not downloaded_files:
+            await msg.edit_text('❌ Audio was not downloaded.')
+            increment_fail()
+            return
+            
+        temp_file = downloaded_files[0]
+        await msg.edit_text(build_status('📤 Uploading audio...'))
+        
+        final_title = song_title if song_title else "Audio"
+        final_artist = artist if artist else None
+
+        with open(temp_file, 'rb') as audio:
+            await update.message.reply_audio(audio, title=final_title, performer=final_artist)
+
+        increment_success()
+        await msg.edit_text(build_status('✅ Done.'))
+
+    except subprocess.TimeoutExpired:
+        logging.error("Audio download timeout")
+        increment_fail()
+        await msg.edit_text(build_status('❌ Download timeout.'))
+    except subprocess.CalledProcessError as e:
+        err_text = (last_err_text or getattr(e, 'stderr', '') or '').strip()
+        logging.error(f"Audio download error: {err_text}")
+        increment_fail()
+        await msg.edit_text(build_status('❌ Failed to download audio.'))
+    except Exception as e:
+        logging.exception("Unexpected error in audio download")
+        increment_fail()
+        await msg.edit_text(build_status('❌ Unexpected error.'))
+    finally:
+        files_to_remove = glob.glob(f'{TEMP_FOLDER}/{unique_id}.*')
+        for f in files_to_remove:
+            if os.path.exists(f):
+                os.remove(f)
+
 # Transcode video to fit Telegram limit
 def compress_video(input_path: str, output_path: str) -> bool:
     try:
         command = [
-            'ffmpeg', '-i', input_path,
-            '-vf', 'scale=w=640:h=-2',
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '28',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-movflags', '+faststart',
-            output_path
+            'ffmpeg', '-i', input_path, '-vf', 'scale=w=640:h=-2', '-c:v', 'libx264',
+            '-preset', 'fast', '-crf', '28', '-c:a', 'aac', '-b:a', '128k',
+            '-movflags', '+faststart', output_path
         ]
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return os.path.exists(output_path) and os.path.getsize(output_path) <= 50 * 1024 * 1024
@@ -113,26 +281,17 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
     compressed_file = f'{TEMP_FOLDER}/{unique_id}_compressed.mp4'
     cookie_file = get_cookie_file(url)
 
-    # Build and run yt-dlp with retries
     def build_command() -> list[str]:
         cmd = ['yt-dlp']
-        if cookie_file:
-            cmd += ['--cookies', cookie_file]
-        cmd += [
-            '-f', 'bestvideo+bestaudio/best',
-            '--merge-output-format', 'mp4',
-            '--no-playlist',
-            '--newline',
-            '-o', temp_file
-        ]
+        if cookie_file: cmd.extend(['--cookies', cookie_file])
+        cmd.extend([
+            '-f', 'bestvideo+bestaudio/best', '--merge-output-format', 'mp4',
+            '--no-playlist', '--newline', '-o', temp_file
+        ])
         if 'instagram.com' in url:
-            mobile_ua = (
-                'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) '
-                'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 '
-                'Mobile/15E148 Safari/604.1'
-            )
-            cmd += ['--user-agent', mobile_ua, '--referer', 'https://www.instagram.com/']
-        cmd += [url]
+            mobile_ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+            cmd.extend(['--user-agent', mobile_ua, '--referer', 'https://www.instagram.com/'])
+        cmd.append(url)
         return cmd
 
     max_attempts = 3
@@ -142,40 +301,30 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
         for attempt in range(1, max_attempts + 1):
             command = build_command()
             logging.info(f"Starting yt-dlp (attempt {attempt}): {' '.join(command)}")
-            # Обновим статус на попытку скачивания
             try:
                 await msg.edit_text(build_status('⏳ Downloading...', attempt, max_attempts))
-            except Exception:
-                pass
-            # Потоковое отслеживание прогресса на stderr
+            except Exception: pass
+            
             start_ts = time.monotonic()
             err_lines: list[str] = []
             percent_last: str | None = None
             last_update = 0.0
             proc = subprocess.Popen(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1
+                command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                text=True, bufsize=1
             )
             progress_re = re.compile(r"\[download\]\s+(\d{1,3}(?:\.\d+)?)%")
             try:
                 while True:
-                    # Таймаут 300с на попытку
                     if time.monotonic() - start_ts > 300:
                         proc.kill()
                         raise subprocess.TimeoutExpired(command, timeout=300)
-                    # Читаем stderr, если доступно
-                    if proc.stderr is None:
-                        break
+                    if proc.stderr is None: break
+                    
                     rlist, _, _ = select.select([proc.stderr], [], [], 0.5)
                     if rlist:
                         line = proc.stderr.readline()
-                        if not line:
-                            if proc.poll() is not None:
-                                break
-                            continue
+                        if not line and proc.poll() is not None: break
                         err_lines.append(line)
                         m = progress_re.search(line)
                         if m:
@@ -184,122 +333,95 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
                             if percent != percent_last and (now - last_update) >= 1.0:
                                 try:
                                     await msg.edit_text(build_status('⏳ Downloading...', attempt, max_attempts, f'[{percent}%]'))
-                                except Exception:
-                                    pass
+                                except Exception: pass
                                 percent_last = percent
                                 last_update = now
-                    else:
-                        if proc.poll() is not None:
-                            break
+                    elif proc.poll() is not None:
+                        break
+                
                 rc = proc.wait()
                 if rc != 0:
                     last_err_text = ''.join(err_lines)
                     raise subprocess.CalledProcessError(rc, command, output='', stderr=last_err_text)
-                # Success
-                try:
-                    await msg.edit_text(build_status('✅ Downloaded. Processing file...'))
-                except Exception:
-                    pass
+                
+                try: await msg.edit_text(build_status('✅ Downloaded. Processing file...'))
+                except Exception: pass
                 break
             finally:
                 try:
-                    if proc.stderr and not proc.stderr.closed:
-                        proc.stderr.close()
-                except Exception:
-                    pass
+                    if proc.stderr and not proc.stderr.closed: proc.stderr.close()
+                except Exception: pass
 
         if not os.path.exists(temp_file):
-            fallback_matches = [
-                path for path in glob.glob(f'{TEMP_FOLDER}/{unique_id}.*')
-                if not path.endswith('.part')
-            ]
+            fallback_matches = [p for p in glob.glob(f'{TEMP_FOLDER}/{unique_id}.*') if not p.endswith('.part')]
             if fallback_matches:
-                fallback_matches.sort(key=os.path.getsize, reverse=True)
-                temp_file = fallback_matches[0]
+                temp_file = max(fallback_matches, key=os.path.getsize)
             else:
-                await msg.edit_text('❌ Video was not downloaded. It may exceed the limit or be unavailable.')
+                await msg.edit_text('❌ Video was not downloaded.')
                 return
 
-        if not os.path.exists(temp_file):
-            await msg.edit_text('❌ Video was not downloaded. It may exceed the limit or be unavailable.')
-            return
-
-        file_size = os.path.getsize(temp_file)
-        if file_size > 50 * 1024 * 1024:
-            try:
-                await msg.edit_text(build_status('⚙️ Large video, transcoding...'))
-            except Exception:
-                pass
+        if os.path.getsize(temp_file) > 50 * 1024 * 1024:
+            try: await msg.edit_text(build_status('⚙️ Large video, transcoding...'))
+            except Exception: pass
             if not compress_video(temp_file, compressed_file):
-                await msg.edit_text(build_status('❌ Failed to transcode video to fit Telegram limit.'))
+                await msg.edit_text(build_status('❌ Failed to transcode video.'))
                 return
             os.remove(temp_file)
             temp_file = compressed_file
 
         logging.info(f"Video ready to send: {temp_file}")
-        try:
-            await msg.edit_text(build_status('📤 Uploading video...'))
-        except Exception:
-            pass
+        try: await msg.edit_text(build_status('📤 Uploading video...'))
+        except Exception: pass
 
         with open(temp_file, 'rb') as video:
             await update.message.reply_video(video)
 
-        # Increase success counter
         increment_success()
-        try:
-            await msg.edit_text(build_status('✅ Done.'))
-        except Exception:
-            pass
+        try: await msg.edit_text(build_status('✅ Done.'))
+        except Exception: pass
 
     except subprocess.TimeoutExpired:
         logging.error("Download timeout")
         increment_fail()
-        await msg.edit_text(build_status('❌ Download timeout. Try again later.'))
+        await msg.edit_text(build_status('❌ Download timeout.'))
     except subprocess.CalledProcessError as e:
-        err_text = (last_err_text or e.stderr.decode('utf-8', errors='ignore')).strip()
+        err_text = (last_err_text or getattr(e, 'stderr', '') or '').strip()
         logging.error(f"Video download error: {err_text}")
         increment_fail()
         low = err_text.lower()
-        if ('login required' in low) or ('rate-limit' in low) or ('locked behind the login page' in low):
-            # Short and clear message
-            await msg.edit_text(build_status('❌ Instagram login required or rate limit. Update cookies and retry.'))
+        if 'login required' in low or 'rate-limit' in low or 'locked' in low:
+            await msg.edit_text(build_status('❌ Login required or rate limit.'))
         else:
-            await msg.edit_text(build_status('❌ Failed to download. Try again later.'))
+            await msg.edit_text(build_status('❌ Failed to download.'))
     except Exception as e:
         logging.exception("Unexpected error")
         increment_fail()
-        await msg.edit_text(build_status('❌ Unexpected error. Try again later.'))
+        await msg.edit_text(build_status('❌ Unexpected error.'))
     finally:
         for f in [temp_file, compressed_file]:
-            if os.path.exists(f):
-                os.remove(f)
+            if os.path.exists(f): os.remove(f)
 
 # /start — greeting and keyboard
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS:
-        return
-    keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton('Stats')]], resize_keyboard=True
-    )
+    if user_id not in ALLOWED_USERS: return
+    keyboard = ReplyKeyboardMarkup([['Stats']], resize_keyboard=True)
     await update.message.reply_text(
-        'Send a link to an Instagram or YouTube video.\n'
-        'Tap “Stats” to see totals since start, or use /stats.',
+        'Send a link (Instagram, YouTube) to download video, or send a song title/Spotify link to get audio.\n'
+        'Tap “Stats” for stats.',
         reply_markup=keyboard
     )
 
 # /stats and “Stats” button
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS:
-        return
+    if user_id not in ALLOWED_USERS: return
     await update.message.reply_text(f'Stats: {get_stats_text()}')
 
-# Точка входа
+# Main entry point
 if __name__ == '__main__':
     if not TOKEN or not ALLOWED_USERS:
-        raise ValueError("Environment variables BOT_TOKEN and ALLOWED_USER_IDS are required")
+        raise ValueError("BOT_TOKEN and ALLOWED_USER_IDS are required")
 
     app = ApplicationBuilder().token(TOKEN).build()
     # Commands
@@ -307,8 +429,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('stats', stats_command))
     # Stats button (case-insensitive)
     app.add_handler(MessageHandler(filters.Regex(re.compile(r'^stats$', re.IGNORECASE)), stats_command))
-    # Handle links
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), download_and_send_video))
+    # Main message handler/router
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), route_message))
 
     logging.info('Bot started...')
     app.run_polling()
