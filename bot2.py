@@ -7,6 +7,7 @@ import subprocess
 import uuid
 import time
 import random
+import telegram
 from datetime import date
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters, CommandHandler
@@ -380,6 +381,10 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
         try: await msg.edit_text(build_status('✅ Done.'))
         except Exception: pass
 
+    except (telegram.error.TimedOut, telegram.error.NetworkError) as e:
+        logging.error(f"Telegram API error: {e}")
+        increment_fail()
+        await msg.edit_text(build_status('❌ Failed to upload due to a network error.'))
     except subprocess.TimeoutExpired:
         logging.error("Download timeout")
         increment_fail()
@@ -418,12 +423,21 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALLOWED_USERS: return
     await update.message.reply_text(f'Stats: {get_stats_text()}')
 
+
+# Generic error handler
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error("Exception while handling an update:", exc_info=context.error)
+
 # Main entry point
 if __name__ == '__main__':
     if not TOKEN or not ALLOWED_USERS:
         raise ValueError("BOT_TOKEN and ALLOWED_USER_IDS are required")
 
     app = ApplicationBuilder().token(TOKEN).build()
+    
+    # Register the error handler
+    app.add_error_handler(error_handler)
+
     # Commands
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('stats', stats_command))
